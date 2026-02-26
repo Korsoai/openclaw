@@ -1,0 +1,92 @@
+# Railway deployment wrapper for clawdbot (custom openclaw build).
+#
+# Differences from the upstream Korsoai/clawdbot-railway-template Dockerfile:
+#   - Builds from LOCAL source (COPY . /openclaw) instead of cloning GitHub.
+#   - This ensures your customized src/ code is always what gets deployed.
+#   - Wrapper server lives in railway/ (instead of src/).
+#
+# Build: docker build -f Dockerfile.railway -t clawdbot-railway .
+# Run:   docker run -p 8080:8080 -e SETUP_PASSWORD=secret \
+#          -e OPENCLAW_STATE_DIR=/tmp/.openclaw clawdbot-railway
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build openclaw from local source
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm AS openclaw-build
+
+# Build tools
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    python3 \
+    make \
+    g++ \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install Bun (required for openclaw build scripts)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+RUN corepack enable
+
+WORKDIR /openclaw
+
+# Copy only dependency manifests first (better layer caching)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+COPY scripts ./scripts
+
+# Reduce OOM risk on low-memory hosts (Railway free tier has 512MB–1GB)
+RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+
+# Copy full source and build
+COPY . .
+RUN pnpm build
+ENV OPENCLAW_PREFER_PNPM=1
+RUN pnpm ui:build
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime image
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm
+ENV NODE_ENV=production
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# `openclaw update` (and extension installs) expect pnpm at runtime.
+RUN corepack enable && corepack prepare pnpm@10.23.0 --activate
+
+# Provide an openclaw executable shim pointing to the built entry.
+# Must come before copying /openclaw so the path exists.
+RUN mkdir -p /openclaw
+
+WORKDIR /app
+
+# Install wrapper dependencies (express, http-proxy, tar)
+COPY railway/package.json ./railway/package.json
+RUN cd railway && npm install --omit=dev && npm cache clean --force
+
+# Copy built openclaw from stage 1
+COPY --from=openclaw-build /openclaw /openclaw
+
+# Copy wrapper server source
+COPY railway/src ./railway/src
+
+# Create openclaw CLI shim (used by wrapper's `openclaw onboard`, etc.)
+RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"' \
+    > /usr/local/bin/openclaw \
+ && chmod +x /usr/local/bin/openclaw
+
+# The wrapper listens on this port.
+# Railway may inject PORT=3000; OPENCLAW_PUBLIC_PORT takes precedence (see server.js).
+ENV OPENCLAW_PUBLIC_PORT=8080
+ENV PORT=8080
+EXPOSE 8080
+
+# Entry point: wrapper server (manages gateway lifecycle + /setup wizard + proxy)
+CMD ["node", "railway/src/server.js"]
