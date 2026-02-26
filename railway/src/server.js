@@ -225,22 +225,43 @@ function upsertManagedMarkdownBlock(filePath, startMarker, endMarker, blockConte
   fs.writeFileSync(filePath, next, "utf8");
 }
 
+/**
+ * Returns true if any web search API key is present in the environment.
+ * Used to decide whether to enable built-in web_search / web_fetch tools.
+ */
+function hasWebSearchKey() {
+  return Boolean(
+    process.env.BRAVE_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.PERPLEXITY_API_KEY ||
+    process.env.XAI_API_KEY ||
+    process.env.KIMI_API_KEY ||
+    process.env.MOONSHOT_API_KEY ||
+    process.env.FIRECRAWL_API_KEY
+  );
+}
+
 function ensureDefaultBrowserGuidance() {
   const toolsPath = path.join(WORKSPACE_DIR, "TOOLS.md");
   const startMarker = "<!-- openclaw-railway-template:agent-browser-policy:start -->";
   const endMarker = "<!-- openclaw-railway-template:agent-browser-policy:end -->";
-  const blockContent = [
-    "## Browser Automation Policy (managed)",
-    "",
-    "- `agent-browser` is the default and required browsing tool.",
-    "- Use this workflow for browsing tasks: `agent-browser open <url>` -> `agent-browser snapshot -i` -> interact by refs -> snapshot again after navigation/DOM changes.",
-    "- If browser automation fails, stop and report the failure with command output and context.",
-    "- Do not fall back to Tavily, WebFetch, or alternate browsing/search tools unless the user explicitly overrides this policy.",
-    "",
-    "Quick health check:",
-    "- `agent-browser --help`",
-    "- `agent-browser snapshot -i --json` (after opening a page)",
-  ].join("\n");
+
+  const searchKeys = hasWebSearchKey();
+  const blockContent = searchKeys
+    ? [
+        "## Web Search Policy (managed)",
+        "",
+        "- `web_search` and `web_fetch` are available (API key detected).",
+        "- Use `web_search` for keyword/factual queries; use `web_fetch` to read a specific URL.",
+        "- The built-in browser tool is disabled on this host; do not attempt `browser` tool calls.",
+      ].join("\n")
+    : [
+        "## Browser Automation Policy (managed)",
+        "",
+        "- The built-in browser and web search tools are disabled on this host.",
+        "- To enable web search, set BRAVE_API_KEY (or PERPLEXITY_API_KEY) in Railway and redeploy.",
+        "- If browser automation is needed, report the limitation to the user.",
+      ].join("\n");
 
   upsertManagedMarkdownBlock(toolsPath, startMarker, endMarker, blockContent);
 }
@@ -269,23 +290,41 @@ async function enforceBrowserRuntimePolicy() {
   );
   outputs.push(`[config browser.enabled=false] exit=${browserDisable.code}`);
 
-  // Disable built-in web_search/web_fetch tools so the model doesn't keep selecting them.
-  // We want browsing to route through agent-browser policy + CLI workflow.
-  const webSearchDisable = await runCmd(
-    OPENCLAW_NODE,
-    clawArgs(["config", "set", "--json", "tools.web.search.enabled", "false"]),
-  );
-  outputs.push(
-    `[config tools.web.search.enabled=false] exit=${webSearchDisable.code}`,
-  );
+  // Enable web_search/web_fetch when a search API key is present (Brave, Perplexity, etc.).
+  // Without a key, disable them so the model doesn't select unavailable tools.
+  if (hasWebSearchKey()) {
+    const webSearchEnable = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs(["config", "set", "--json", "tools.web.search.enabled", "true"]),
+    );
+    outputs.push(
+      `[config tools.web.search.enabled=true] exit=${webSearchEnable.code}`,
+    );
 
-  const webFetchDisable = await runCmd(
-    OPENCLAW_NODE,
-    clawArgs(["config", "set", "--json", "tools.web.fetch.enabled", "false"]),
-  );
-  outputs.push(
-    `[config tools.web.fetch.enabled=false] exit=${webFetchDisable.code}`,
-  );
+    const webFetchEnable = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs(["config", "set", "--json", "tools.web.fetch.enabled", "true"]),
+    );
+    outputs.push(
+      `[config tools.web.fetch.enabled=true] exit=${webFetchEnable.code}`,
+    );
+  } else {
+    const webSearchDisable = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs(["config", "set", "--json", "tools.web.search.enabled", "false"]),
+    );
+    outputs.push(
+      `[config tools.web.search.enabled=false] exit=${webSearchDisable.code}`,
+    );
+
+    const webFetchDisable = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs(["config", "set", "--json", "tools.web.fetch.enabled", "false"]),
+    );
+    outputs.push(
+      `[config tools.web.fetch.enabled=false] exit=${webFetchDisable.code}`,
+    );
+  }
 
   // Keep sandbox browser control disabled as well.
   const sandboxBrowserDisable = await runCmd(
