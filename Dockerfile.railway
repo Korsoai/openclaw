@@ -39,7 +39,7 @@ COPY patches ./patches
 COPY scripts ./scripts
 
 # Reduce OOM risk on low-memory hosts (Railway free tier has 512MB–1GB)
-RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+RUN NODE_OPTIONS=--max-old-space-size=512 pnpm install --frozen-lockfile
 
 # Copy full source and build
 COPY . .
