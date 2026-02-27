@@ -13,11 +13,16 @@ OUTPUT_FILE="$ROOT_DIR/src/canvas-host/a2ui/a2ui.bundle.js"
 A2UI_RENDERER_DIR="$ROOT_DIR/vendor/a2ui/renderers/lit"
 A2UI_APP_DIR="$ROOT_DIR/apps/shared/OpenClawKit/Tools/CanvasA2UI"
 
-# Docker builds exclude vendor/apps via .dockerignore.
-# In that environment we can keep a prebuilt bundle only if it exists.
+# Allow CI/Docker builds to skip bundling when sources are unavailable.
+# Set SKIP_A2UI_BUNDLE=1 to create an empty stub and continue.
 if [[ ! -d "$A2UI_RENDERER_DIR" || ! -d "$A2UI_APP_DIR" ]]; then
   if [[ -f "$OUTPUT_FILE" ]]; then
     echo "A2UI sources missing; keeping prebuilt bundle."
+    exit 0
+  fi
+  if [[ "${SKIP_A2UI_BUNDLE:-0}" == "1" ]]; then
+    echo "SKIP_A2UI_BUNDLE=1: creating empty stub bundle (Canvas A2UI unavailable at runtime)." >&2
+    echo "// stub: A2UI bundle skipped at build time" > "$OUTPUT_FILE"
     exit 0
   fi
   echo "A2UI sources missing and no prebuilt bundle found at: $OUTPUT_FILE" >&2

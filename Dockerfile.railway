@@ -43,7 +43,9 @@ RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
 
 # Copy full source and build
 COPY . .
-RUN pnpm build
+# A2UI sources are excluded from the Railway upload (vendor/ is gitignored).
+# Use the stub-bundle escape hatch so the rest of the build succeeds.
+RUN SKIP_A2UI_BUNDLE=1 pnpm build
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
